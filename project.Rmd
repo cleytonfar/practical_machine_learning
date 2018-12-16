@@ -1,0 +1,273 @@
+---
+title: "Project Assignment"
+author: "Cleyton Farias"
+date: ""
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+# Introduction
+
+Nowadays the use of wearble devices by people has become as usual as the use of 
+ordinary clothings. Wearable technology has a variety of applications which grows
+as the field itself expands. A proeminent example of such device is the activity trackers in which people use to quantify how much of a particular activity they do. 
+One common issue is that the use of activity trackers rarely quantify/identify 
+how well people do a certain activity.
+
+Using data from accelerometers on the belt, forearm, arm and dumbbell of 6 participants
+in which they were asked to perform Weight lifting exercises (Unilateral Dumbbell
+Biceps Curl), I was able to investigate "how well" an activity was performed by 
+the wearer through the analysis of machine learning models. 
+
+
+
+# Data
+
+The dataset used in this project comes from a experiment performed by 
+Velloso et al (2013)^[Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; 
+Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings
+of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13).
+Stuttgart, Germany: ACM SIGCHI, 2013.] in which six young health 
+participants were asked to perform one set of 10 repetitions of the Unilateral 
+Dumbbell Biceps 
+Curl. 
+
+The concept of correctness of the exercise is defined as follows:
+
+- Class A: exactly according to the specification;
+- Class B: throwing the elbows to the front;
+- Class C: lifting the dumbbell only halfway;
+- Class D: lowering the dumbbell only halfway;
+- Class E: throwing the hips to the front;
+
+In other words, Class A corresponds to the perfect execution of the exercise, 
+while the other 4 classes correspond to common mistakes.
+
+The dataset contains information about Euler angles (roll, pitch
+and yaw), raw accelerometer, gyroscope and magnetometer 
+readings for each sensor (there are four in total). For the Euler angles of each
+of the four sensors there were more eight features: mean, variance,
+standard deviation, max, min, amplitude, kurtosis and skewness,
+generating in total 96 derived feature sets. 
+
+The dataset is separated in [training](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+and [testing](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) set.
+
+
+## Exploratory Data Analysis:
+
+The training set contains 19622 rows and test only 20. Both datasets contains 96 
+features. The goal of this project is to train a model using the training set in
+order to predict "how well" each subject performed the activity. 
+
+To get a sense of the data, let's read the datasets:
+
+```{r, message=FALSE, warning=FALSE}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+
+training <- fread("../data/pml-training.csv")
+testing <- fread("../data/pml-testing.csv")
+
+dim(training)
+dim(testing)
+```
+
+Let's inspect the distribution of the classes that we want to predict:
+
+```{r, fig.align='center'}
+library(scales)
+ggplot(training) + aes(x = classe, fill = classe) + 
+    geom_bar(aes(y=..count../sum(..count..))) +
+    scale_y_continuous(labels=percent_format()) + 
+    labs(title = "", y = "proportion", x = "") + 
+    theme_minimal()
+```
+
+Class A has the greatest proportion among the classes, although in general the 
+classes are well distributed. This indicates that we might have a "regular" 
+multiclass classifaction problem at hand. 
+
+
+As the dataset contains columns with NA values, I will only consider variables that
+do not present any NA value:
+
+```{r, warning=FALSE}
+na_col <- data.table(names(training),
+           sapply(training, function(x) mean(is.na(x)))) %>% 
+    filter(V2 > 0) %>% select(V1)
+
+training <- select(training, -c(V1, na_col$V1))
+testing <- select(testing, -c(V1, na_col$V1))
+```
+
+Now let's investigate the variables that are more correlated to the classes in 
+order to get an idea which features can be important to the analysis. As the *classe*
+is a categorical variable, I create a dummy variable which takes value 1 if the 
+movement was done correctly (Class A) and 0 otherwise (Classe B, C, D and E):
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+##----------------------------------------------------------------------------##
+## Analysing numeric variables:
+training$classe_num <- ifelse(training$classe == "A", 1, 0)
+## Correlation with numeric variables:
+cor_numVar <- cor(select_if(training, is.numeric))
+## Sort on decreasing correlations with classe_num:
+cor_sorted <- sort(cor_numVar[, "classe_num"], decreasing = T) %>% as.matrix()
+## Select only correlations with classe_num greater than 0.2 in abs value:
+CorHigh <- apply(cor_sorted, 1, function(x) abs(x) > 0.2) %>% which %>% names
+cor_numVar <- cor_numVar[CorHigh, CorHigh] ## selecting from correlation matrix
+library(corrplot)
+corrplot.mixed(cor_numVar, tl.col="black", tl.pos = "lt")
+```
+
+From the correlation analysis, we can see that 8 variables demonstrated correlation 
+greater than 0.2 in absolute value. Let's examine the description of these variables:
+
+```{r, message=FALSE, results='asis', fig.align='center'}
+library(summarytools)
+descr(select(training, CorHigh, -classe_num), 
+      stats = c("mean", "sd", "min", "med", "max"), 
+      transpose = TRUE, 
+      omit.headings = TRUE, style = "rmarkdown")
+```
+
+From the table above, we see that the variables completely different ranges. This is 
+important because if we train a algorithm using this raw data, it tend to be more
+bias prone. Hence, this is evidence that we might have to normalize the variables 
+before training an algorithm on this data. 
+
+
+# Estimation Strategy:
+
+The modelling process will consist in working with the 
+algorithm of Random Forest to predict the classes based on the characteristics 
+of the exercise performed by the individual. 
+
+In order to do that I will split the training data into two subsets: a train (train_data) and
+a validation set (val_data). 
+
+With the *train_data*, I will first calculate the parameters to normalize the 
+variables in both datasets. Then, I will split the dataset in 5 folds to perform
+cross validation (CV). The importance of this procedure is twofold: first, it 
+will give an estimate of the error rate that the algorithm will display when 
+faced with new data; and second, it is the standard procedure to choose the hyperparameters
+of the algorithm.
+
+Once the model is estimated, the next step is to validate the model using the 
+val_data. That is, I will generate a prediction on the val_data and once we know
+the classes, we can check if the error rate on this dataset is very close to the 
+CV error rate in order to detect some sign of overfitting. 
+
+Finally, once all this process is performed, I append the train_data and val_data
+and run one final model for the values of the hyperparameters chosen by the 
+CV strategy. 
+
+
+
+```{r, message=FALSE}
+library(caret)
+
+## 
+train <- select(training, -c(classe_num, 2:4))
+
+## Create train_data and val_data
+set.seed(123)
+inTrain <- createDataPartition(train$classe, p = .8, list = F)
+train_data = train[inTrain]
+val_data = train[-inTrain]
+
+## Normalizing the dataset:
+pre_processing <- preProcess(train_data, method = c("range"))
+train_data_sc <- predict(pre_processing, train_data)
+val_data_sc <- predict(pre_processing, val_data)
+
+## Create the CV folders:
+folds <- createFolds(train_data$classe, k = 5)
+
+## Training the Random Forest:
+library(caret)
+modelRF <- train(classe ~.,
+                 train_data_sc,
+                 tuneLength = 10,
+                 method = "ranger",
+                 trControl = trainControl(method = "cv",
+                                          number = 5, 
+                                          index = folds))
+
+```
+
+
+# Results
+
+After estimated the model using the train_data, the CV error rate was around 
+`r paste0(round(1-0.97989, 2), "%")`. That is, the accuracy was about 98%. The 
+standard deviation of accuracy was 0.3%, which means that with probability of 95%
+the the accuracy on the val_data will be between `r 98-2*0.3`% and  `r 98+2*0.3`% 
+(assuming the distribution of accuracy tends to a Gaussian distribution).
+
+Moreover, using the CV strategy we ended with the number of variables to possibly 
+split at in each node equal to 27, with minimal node size equal to 1 and using 
+the gini index as splitting rule.
+
+Analyzing the performance of model on the val_data, we have:
+
+```{r, fig.align='center'}
+## performance on validation set:
+cm <- confusionMatrix(predict(modelRF, val_data_sc), as.factor(val_data_sc$classe))
+
+ggplotConfusionMatrix <- function(m){
+    
+    p1 = ggplot(data = as.data.table(m$table),
+                aes(x = Reference, y = Prediction)) +
+        geom_tile(aes(fill = log(N)), colour = "white") +
+        scale_fill_gradient(low = "white", high = "steelblue") +
+        geom_text(aes(x = Reference, y = Prediction, label = N)) +
+        theme(plot.title = element_text(hjust = 0.5),
+              legend.position = "none") +
+        labs(title = paste("Accuracy", percent_format()(m$overall[1])))
+    
+    return(p1)
+    
+}
+ggplotConfusionMatrix(cm)
+
+```
+
+As we can see, the accuracy on the validation data was almost perfect with a 
+value of 99.8%.
+
+The final step is to re-run the model with all the training data setting the
+hyperparameters values equal to the CV values. After that, we can make our 
+last prediction on the 20 instances of the test set:
+
+```{r, message=FALSE, warning=FALSE}
+##----------------------------------------------------------------------------##
+## Final model:
+test <- testing %>% select(colnames(select(train, -classe)))
+
+## pre-processing:
+pre_processing <- preProcess(train, method = c("range"))
+train_sc <- predict(pre_processing, train)
+test_sc <- predict(pre_processing, test)
+
+
+## Estimation final model:
+modelRF_final <- train(classe ~.,
+                       train_sc,
+                       tuneGrid = data.table(mtry = modelRF$bestTune$mtry,
+                                             splitrule = modelRF$bestTune$splitrule,
+                                             min.node.size = modelRF$bestTune$min.node.size),
+                       method = "ranger",
+                       importance = "impurity")
+
+
+## Predicting the final model:
+predict(modelRF_final, test_sc)
+```
+
+
