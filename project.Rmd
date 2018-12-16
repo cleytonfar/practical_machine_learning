@@ -22,6 +22,9 @@ in which they were asked to perform Weight lifting exercises (Unilateral Dumbbel
 Biceps Curl), I was able to investigate "how well" an activity was performed by 
 the wearer through the analysis of machine learning models. 
 
+Using an approach in which devides the dataset into training and validation to 
+test the performance of the resulted algorithm, the model was able to correctly
+classify 99.8% of the instances. 
 
 
 # Data
